@@ -78,6 +78,23 @@ jobs:
         with:
           submodules: recursive
 
+      # В hbb_common сервер и ключ зашиты константами и из переменных окружения не читаются,
+      # поэтому подставляем свои значения прямо в исходник (подмодуль уже загружен выше).
+      - name: Patch default server and key
+        shell: bash
+        run: |
+          set -e
+          if [ -z "$RENDEZVOUS_SERVER" ] || [ -z "$RS_PUB_KEY" ]; then
+            echo "::error::Секреты RENDEZVOUS_SERVER и RS_PUB_KEY пусты. Проверьте их имена и 'secrets: inherit' в flutter-nightly.yml"
+            exit 1
+          fi
+          f=libs/hbb_common/src/config.rs
+          sed -i -E "s|^pub const RENDEZVOUS_SERVERS: &\[&str\] = &\[.*\];|pub const RENDEZVOUS_SERVERS: \&[\&str] = \&[\"${RENDEZVOUS_SERVER}\"];|; s|^pub const RS_PUB_KEY: &str = \".*\";|pub const RS_PUB_KEY: \&str = \"${RS_PUB_KEY}\";|" "$f"
+          # Если подстановка не сработала, сборка падает, а не выпускает клиент с чужими настройками
+          grep -qF "\"${RENDEZVOUS_SERVER}\"" "$f"
+          grep -qF "\"${RS_PUB_KEY}\"" "$f"
+          echo "Server and key patched in $f"
+
       - name: Restore bridge files
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
