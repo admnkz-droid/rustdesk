@@ -31,8 +31,6 @@ env:
   VERSION: "1.5.0"
   UPLOAD_ARTIFACT: "${{ inputs.upload-artifact }}"
   SIGN_BASE_URL: "${{ secrets.SIGN_BASE_URL }}-2"
-  RS_PUB_KEY: "${{ secrets.RS_PUB_KEY || vars.RS_PUB_KEY }}"
-  RENDEZVOUS_SERVER: "${{ secrets.RENDEZVOUS_SERVER || vars.RENDEZVOUS_SERVER }}"
 
 jobs:
   generate-bridge:
@@ -88,11 +86,6 @@ jobs:
         shell: bash
         run: |
           set -e
-          SERVER="vm9.xamelion.ru"
-          KEY="z3b+vU7rM2NlVwHw/tK75V8="
-          echo "Target server: $SERVER"
-          echo "Target key: $KEY"
-
           chmod -R u+w libs/hbb_common || true
           cmd.exe /c "attrib -r libs\\hbb_common\\*.* /s" || true
 
@@ -100,11 +93,12 @@ jobs:
           import os
 
           server = 'vm9.xamelion.ru'
-          key = 'z3b+vU7rM2NlVwHw/tK75V8='
-          path = os.path.join('libs', 'hbb_common', 'src', 'config.rs')
+          key = 'jggZk86lzNzOlpmKZMUvYjnSJwoW7QoXS1XocVk3RYg='
 
-          if os.path.exists(path):
-              with open(path, 'r', encoding='utf-8', errors='ignore') as fp:
+          # 1. Патчим libs/hbb_common/src/config.rs
+          cfg_path = os.path.join('libs', 'hbb_common', 'src', 'config.rs')
+          if os.path.exists(cfg_path):
+              with open(cfg_path, 'r', encoding='utf-8', errors='ignore') as fp:
                   lines = fp.readlines()
               new_lines = []
               for line in lines:
@@ -120,18 +114,22 @@ jobs:
                       new_lines.append('    return \"' + key + '\".to_string();\n')
                   else:
                       new_lines.append(line)
-              with open(path, 'w', encoding='utf-8') as fp:
+              with open(cfg_path, 'w', encoding='utf-8') as fp:
                   fp.writelines(new_lines)
-              print('libs/hbb_common/src/config.rs successfully patched')
+              print('libs/hbb_common/src/config.rs patched with new key')
 
-          common_path = os.path.join('src', 'common.rs')
-          if os.path.exists(common_path):
-              with open(common_path, 'r', encoding='utf-8', errors='ignore') as fp:
-                  txt = fp.read()
-              txt = txt.replace('rustdesk.com', server)
-              with open(common_path, 'w', encoding='utf-8') as fp:
-                  fp.write(txt)
-              print('src/common.rs successfully patched')
+          # 2. Патчим flutter UI дефолты
+          for root, dirs, files in os.walk('flutter'):
+              for file in files:
+                  if file.endswith('.dart'):
+                      fpath = os.path.join(root, file)
+                      with open(fpath, 'r', encoding='utf-8', errors='ignore') as fp:
+                          txt = fp.read()
+                      if 'rs-ny.rustdesk.com' in txt or 'rustdesk.com' in txt:
+                          txt = txt.replace('rs-ny.rustdesk.com', server)
+                          with open(fpath, 'w', encoding='utf-8') as fp:
+                              fp.write(txt)
+          print('Flutter UI sources patched')
           "
 
       - name: Restore bridge files
@@ -260,6 +258,7 @@ jobs:
           name: topmostwindow-artifacts-x64
           path: "./rustdesk"
 
+      # Вшиваем корректный RustDesk2.toml внутрь дистрибутива
       - name: Inject pre-configured RustDesk2.toml
         shell: bash
         run: |
@@ -271,14 +270,14 @@ jobs:
               '[options]\n'
               'custom-rendezvous-server = \'vm9.xamelion.ru\'\n'
               'relay-server = \'vm9.xamelion.ru\'\n'
-              'key = \'z3b+vU7rM2NlVwHw/tK75V8=\'\n'
+              'key = \'jggZk86lzNzOlpmKZMUvYjnSJwoW7QoXS1XocVk3RYg=\'\n'
               'api-server = \'http://vm9.xamelion.ru:21114\'\n'
           )
           with open(os.path.join(cfg_dir, 'RustDesk2.toml'), 'w', encoding='utf-8') as f:
               f.write(cfg_text)
           with open(os.path.join('rustdesk', 'RustDesk2.toml'), 'w', encoding='utf-8') as f:
               f.write(cfg_text)
-          print('RustDesk2.toml successfully generated via python')
+          print('RustDesk2.toml injected with verified key')
           "
 
       - name: Upload unsigned
@@ -299,8 +298,11 @@ jobs:
           popd
           mkdir -p ./SignOutput
 
+          # 1. Обычный exe с внедренным конфигом
           cp ./target/release/rustdesk-portable-packer.exe ./SignOutput/rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.exe
-          cp ./target/release/rustdesk-portable-packer.exe "./SignOutput/rustdesk-host=vm9.xamelion.ru,key=z3b+vU7rM2NlVwHw_tK75V8=.exe"
+
+          # 2. Exe с правильным именем для парсера RustDesk (без = на конце ключа)
+          cp ./target/release/rustdesk-portable-packer.exe "./SignOutput/rustdesk-host=vm9.xamelion.ru,key=jggZk86lzNzOlpmKZMUvYjnSJwoW7QoXS1XocVk3RYg.exe"
 
       - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@6fb02220983dee41ce7ae257b6f4d8f9bf5ed4ce # v2
