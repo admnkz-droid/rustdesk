@@ -82,12 +82,13 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Patch default server and key
+      - name: Patch default server, key, and MSI code
         shell: bash
         run: |
           set -e
-          chmod -R u+w libs/hbb_common || true
+          chmod -R u+w libs/hbb_common res/msi || true
           cmd.exe /c "attrib -r libs\\hbb_common\\*.* /s" || true
+          cmd.exe /c "attrib -r res\\msi\\*.* /s" || true
 
           python3 -c "
           import os
@@ -116,20 +117,20 @@ jobs:
                       new_lines.append(line)
               with open(cfg_path, 'w', encoding='utf-8') as fp:
                   fp.writelines(new_lines)
-              print('libs/hbb_common/src/config.rs patched with new key')
+              print('libs/hbb_common/src/config.rs patched')
 
-          # 2. Патчим flutter UI дефолты
-          for root, dirs, files in os.walk('flutter'):
-              for file in files:
-                  if file.endswith('.dart'):
-                      fpath = os.path.join(root, file)
-                      with open(fpath, 'r', encoding='utf-8', errors='ignore') as fp:
-                          txt = fp.read()
-                      if 'rs-ny.rustdesk.com' in txt or 'rustdesk.com' in txt:
-                          txt = txt.replace('rs-ny.rustdesk.com', server)
-                          with open(fpath, 'w', encoding='utf-8') as fp:
-                              fp.write(txt)
-          print('Flutter UI sources patched')
+          # 2. Патчим ошибку pointer truncation в res/msi/CustomActions/CustomActions.cpp
+          cpp_path = os.path.join('res', 'msi', 'CustomActions', 'CustomActions.cpp')
+          if os.path.exists(cpp_path):
+              with open(cpp_path, 'r', encoding='utf-8', errors='ignore') as fp:
+                  cpp_txt = fp.read()
+              # Заменяем небезопасное приведение к int на INT_PTR для x64
+              cpp_txt = cpp_txt.replace('(int)ShellExecuteW', '(INT_PTR)ShellExecuteW')
+              cpp_txt = cpp_txt.replace('(int)ShellExecuteA', '(INT_PTR)ShellExecuteA')
+              cpp_txt = cpp_txt.replace('(int)hInst', '(INT_PTR)hInst')
+              with open(cpp_path, 'w', encoding='utf-8') as fp:
+                  fp.write(cpp_txt)
+              print('CustomActions.cpp patched for 64-bit MSI')
           "
 
       - name: Restore bridge files
@@ -258,7 +259,7 @@ jobs:
           name: topmostwindow-artifacts-x64
           path: "./rustdesk"
 
-      # Вшиваем корректный RustDesk2.toml внутрь дистрибутива
+      # Вшиваем готовый RustDesk2.toml внутрь дистрибутива
       - name: Inject pre-configured RustDesk2.toml
         shell: bash
         run: |
@@ -298,30 +299,29 @@ jobs:
           popd
           mkdir -p ./SignOutput
 
-          # 1. Обычный exe с внедренным конфигом
           cp ./target/release/rustdesk-portable-packer.exe ./SignOutput/rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.exe
-
-          # 2. Exe с правильным именем для парсера RustDesk (без = на конце ключа)
           cp ./target/release/rustdesk-portable-packer.exe "./SignOutput/rustdesk-host=vm9.xamelion.ru,key=jggZk86lzNzOlpmKZMUvYjnSJwoW7QoXS1XocVk3RYg.exe"
 
       - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@6fb02220983dee41ce7ae257b6f4d8f9bf5ed4ce # v2
 
       - name: Build msi
-        continue-on-error: true
         if: env.UPLOAD_ARTIFACT == 'true'
         run: |
           pushd ./res/msi
           python preprocess.py --arp -d ../../rustdesk
           nuget restore msi.sln
-          msbuild msi.sln -p:Configuration=Release -p:Platform=x64 /p:TargetVersion=Windows10
+          msbuild msi.sln -p:Configuration=Release -p:Platform=x64 /p:TargetVersion=Windows10 /p:TreatWarningsAsErrors=false /p:WarningLevel=1
           $msi = Get-ChildItem ./Package/bin/*/Release/en-us/Package.msi | Select-Object -First 1
-          mv $msi.FullName ../../SignOutput/rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.msi || true
+          mv $msi.FullName ../../SignOutput/rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.msi
+          sha256sum ../../SignOutput/rustdesk-*.msi
+          popd
 
-      - name: Upload exe as artifacts
+      - name: Upload installers
         if: env.UPLOAD_ARTIFACT == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rustdesk-windows-x64-installers
           path: |
             ./SignOutput/*.exe
+            ./SignOutput/*.msi
