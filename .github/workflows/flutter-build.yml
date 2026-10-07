@@ -88,41 +88,44 @@ jobs:
         shell: bash
         run: |
           set -e
-          SERVER="${RENDEZVOUS_SERVER:-vm9.xamelion.ru}"
-          KEY="${RS_PUB_KEY:-z3b+vU7rM2NlVwHw/tK75V8=}"
-          f=libs/hbb_common/src/config.rs
+          SERVER="vm9.xamelion.ru"
+          KEY="z3b+vU7rM2NlVwHw/tK75V8="
+          f="libs/hbb_common/src/config.rs"
 
           echo "Target server: $SERVER"
           echo "Target key: $KEY"
 
-          # 1. Заменяем константы серверов и ключа
-          sed -i -E "s#pub const RENDEZVOUS_SERVERS: &\[&str\] = &\[.*\];#pub const RENDEZVOUS_SERVERS: &[&str] = &[\"${SERVER}\"];#; s#pub const RS_PUB_KEY: &str = \".*\";#pub const RS_PUB_KEY: &str = \"${KEY}\";#" "$f"
+          # 1. Снимаем защиту от записи (Read-Only) со всех файлов субмодуля
+          chmod -R u+w libs/hbb_common || true
+          cmd.exe /c "attrib -r libs\\hbb_common\\*.* /s" || true
 
-          # 2. Корректно подставляем возврат значений в функции Rust без нарушения синтаксиса
+          # 2. Перезаписываем константы напрямую через sed
+          sed -i -E "s|pub const RENDEZVOUS_SERVERS: &\[&str\] = &\[.*\];|pub const RENDEZVOUS_SERVERS: &[&str] = &[\"${SERVER}\"];|g" "$f"
+          sed -i -E "s|pub const RS_PUB_KEY: &str = \".*\";|pub const RS_PUB_KEY: &str = \"${KEY}\";|g" "$f"
+
+          # 3. Вписываем принудительный возврат прямо в функции получения сервера и ключа
           python3 -c "
-          with open('$f', 'r') as file:
-              code = file.read()
+          f_path = '$f'
+          with open(f_path, 'r', encoding='utf-8', errors='ignore') as fp:
+              lines = fp.readlines()
 
-          if 'use std::collections::HashMap;' not in code:
-              code = 'use std::collections::HashMap;\n' + code
+          new_lines = []
+          for line in lines:
+              new_lines.append(line)
+              if 'pub fn get_rendezvous_server()' in line and '{' in line:
+                  new_lines.append('    return \"$SERVER\".to_string();\n')
+              elif 'pub fn get_key()' in line and '{' in line:
+                  new_lines.append('    return \"$KEY\".to_string();\n')
 
-          old_server = 'pub fn get_rendezvous_server() -> String {'
-          new_server = 'pub fn get_rendezvous_server() -> String {\n    return \"vm9.xamelion.ru\".to_string();'
-          if old_server in code:
-              code = code.replace(old_server, new_server)
-
-          old_key = 'pub fn get_key() -> String {'
-          new_key = 'pub fn get_key() -> String {\n    return \"z3b+vU7rM2NlVwHw/tK75V8=\".to_string();'
-          if old_key in code:
-              code = code.replace(old_key, new_key)
-
-          with open('$f', 'w') as file:
-              file.write(code)
+          with open(f_path, 'w', encoding='utf-8') as fp:
+              fp.writelines(new_lines)
+          print('Successfully patched functions in', f_path)
           "
 
-          grep -qF "vm9.xamelion.ru" "$f" || (echo "Failed to patch server in $f" && exit 1)
-          grep -qF "z3b+vU7rM2NlVwHw/tK75V8=" "$f" || (echo "Failed to patch key in $f" && exit 1)
-          echo "Successfully patched $f"
+          # 4. Проверяем, что изменения физически записались
+          grep -F "$SERVER" "$f"
+          grep -F "$KEY" "$f"
+          echo "File $f is successfully unlocked and patched!"
 
       - name: Restore bridge files
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
